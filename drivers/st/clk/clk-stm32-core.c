@@ -466,10 +466,9 @@ unsigned long _clk_stm32_get_rate(struct stm32_clk_priv *priv, int id)
 {
 	const struct clk_stm32 *clk = _clk_get(priv, id);
 	int parent;
-	unsigned long rate = 0UL;
 
 	if ((unsigned int)id >= priv->num) {
-		return rate;
+		return 0UL;
 	}
 
 	parent = _clk_stm32_get_parent(priv, id);
@@ -484,21 +483,14 @@ unsigned long _clk_stm32_get_rate(struct stm32_clk_priv *priv, int id)
 			prate = _clk_stm32_get_rate(priv, parent);
 		}
 
-		rate = clk->ops->recalc_rate(priv, id, prate);
-
-		return rate;
+		return clk->ops->recalc_rate(priv, id, prate);
 	}
 
-	switch (parent) {
-	case CLK_IS_ROOT:
+	if (parent == CLK_IS_ROOT) {
 		panic();
-
-	default:
-		rate = _clk_stm32_get_rate(priv, parent);
-		break;
 	}
-	return rate;
 
+	return _clk_stm32_get_rate(priv, parent);
 }
 
 unsigned long _clk_stm32_get_parent_rate(struct stm32_clk_priv *priv, int id)
@@ -519,7 +511,7 @@ static uint8_t _stm32_clk_get_flags(struct stm32_clk_priv *priv, int id)
 
 bool _stm32_clk_is_flags(struct stm32_clk_priv *priv, int id, uint8_t flag)
 {
-	if (_stm32_clk_get_flags(priv, id) & flag) {
+	if ((_stm32_clk_get_flags(priv, id) & flag) != 0U) {
 		return true;
 	}
 
@@ -549,7 +541,7 @@ static int _clk_stm32_enable_core(struct stm32_clk_priv *priv, int id)
 		}
 		if (parent != CLK_IS_ROOT) {
 			ret = _clk_stm32_enable_core(priv, parent);
-			if (ret) {
+			if (ret != 0) {
 				return ret;
 			}
 		}
@@ -965,6 +957,10 @@ int clk_stm32_osc_gate_enable(struct stm32_clk_priv *priv, int id)
 {
 	struct clk_oscillator_data *osc_data = clk_oscillator_get_data(priv, id);
 
+	if (osc_data->frequency == 0UL) {
+		return 0;
+	}
+
 	_clk_stm32_gate_enable(priv, osc_data->gate_id);
 
 	if (_clk_stm32_gate_wait_ready(priv, osc_data->gate_rdy_id, true) != 0U) {
@@ -978,6 +974,10 @@ int clk_stm32_osc_gate_enable(struct stm32_clk_priv *priv, int id)
 void clk_stm32_osc_gate_disable(struct stm32_clk_priv *priv, int id)
 {
 	struct clk_oscillator_data *osc_data = clk_oscillator_get_data(priv, id);
+
+	if (osc_data->frequency == 0UL) {
+		return;
+	}
 
 	_clk_stm32_gate_disable(priv, osc_data->gate_id);
 

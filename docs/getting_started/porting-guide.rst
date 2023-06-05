@@ -1181,6 +1181,18 @@ resets while booting from the active bank, the platform can then switch to boot
 from a different bank. This function then returns the bank that the platform
 should boot its images from.
 
+Function : plat_fwu_is_enabled() [when PSA_FWU_SUPPORT == 1]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+::
+
+    Argument : void
+    Return   : bool
+
+This function is mandatory when PSA_FWU_SUPPORT is enabled. It checks at
+platform level that all conditions are met to initialize FWU process.
+
+
 Common optional modifications
 -----------------------------
 
@@ -2135,7 +2147,7 @@ CPUs. BL31 executes at EL3 and is responsible for:
 
 #. Providing runtime firmware services. Currently, BL31 only implements a
    subset of the Power State Coordination Interface (PSCI) API as a runtime
-   service. See Section 3.3 below for details of porting the PSCI
+   service. See :ref:`psci_in_bl31` below for details of porting the PSCI
    implementation.
 
 #. Optionally passing control to the BL32 image, pre-loaded at a platform-
@@ -2543,6 +2555,8 @@ Function: bool plat_get_entropy(uint64_t \*out) [mandatory]
 
 This function writes entropy into storage provided by the caller. If no entropy
 is available, it must return false and the storage must not be written.
+
+.. _psci_in_bl31:
 
 Power State Coordination Interface (in BL31)
 --------------------------------------------

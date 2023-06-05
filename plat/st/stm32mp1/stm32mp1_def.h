@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2022, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2015-2023, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -10,6 +10,7 @@
 #include <common/tbbr/tbbr_img_def.h>
 #include <drivers/st/stm32mp1_rcc.h>
 #include <dt-bindings/clock/stm32mp1-clks.h>
+#include <dt-bindings/gpio/stm32-gpio.h>
 #include <dt-bindings/reset/stm32mp1-resets.h>
 #include <lib/utils_def.h>
 #include <lib/xlat_tables/xlat_tables_defs.h>
@@ -17,10 +18,13 @@
 #ifndef __ASSEMBLER__
 #include <drivers/st/bsec.h>
 #include <drivers/st/stm32mp1_clk.h>
+#include <drivers/st/stm32mp1_ddr_regs.h>
+#include <drivers/st/stm32mp1_pwr.h>
 
 #include <boot_api.h>
 #include <stm32mp_common.h>
 #include <stm32mp_dt.h>
+#include <stm32mp1_context.h>
 #include <stm32mp1_dbgmcu.h>
 #include <stm32mp1_private.h>
 #include <stm32mp1_shared_resources.h>
@@ -70,6 +74,7 @@
 #define STM32MP1_REV_Z		U(0x1001)
 #endif
 #if STM32MP15
+#define STM32MP1_REV_Y		U(0x2003)
 #define STM32MP1_REV_Z		U(0x2001)
 #endif
 
@@ -105,6 +110,14 @@
 #if STM32MP15
 #define STM32MP_SYSRAM_BASE		U(0x2FFC0000)
 #define STM32MP_SYSRAM_SIZE		U(0x00040000)
+#endif /* STM32MP15 */
+
+#define STM32MP_BACKUP_RAM_BASE		U(0x54000000)
+#if STM32MP13
+#define STM32MP_BACKUP_RAM_SIZE		U(0x00002000)	/* 8KB */
+#endif /* STM32MP13 */
+#if STM32MP15
+#define STM32MP_BACKUP_RAM_SIZE		U(0x00001000)	/* 4KB */
 #endif /* STM32MP15 */
 
 #define STM32MP_NS_SYSRAM_SIZE		PAGE_SIZE
@@ -195,6 +208,13 @@ enum ddr_type {
 					 SRAM1_SIZE - \
 					 PLATFORM_MTD_MAX_PAGE_SIZE)
 #endif
+
+/*
+ * Only used for MTD devices that need some backup blocks.
+ * Must define a maximum size for a partition.
+ */
+#define PLATFORM_MTD_MAX_PART_SIZE	U(0x00400000)
+
 /*******************************************************************************
  * STM32MP1 device/io map related constants (used for MMU)
  ******************************************************************************/
@@ -233,21 +253,7 @@ enum ddr_type {
 #endif
 #define GPIO_BANK_OFFSET		U(0x1000)
 
-/* Bank IDs used in GPIO driver API */
-#define GPIO_BANK_A			U(0)
-#define GPIO_BANK_B			U(1)
-#define GPIO_BANK_C			U(2)
-#define GPIO_BANK_D			U(3)
-#define GPIO_BANK_E			U(4)
-#define GPIO_BANK_F			U(5)
-#define GPIO_BANK_G			U(6)
-#define GPIO_BANK_H			U(7)
-#define GPIO_BANK_I			U(8)
 #if STM32MP15
-#define GPIO_BANK_J			U(9)
-#define GPIO_BANK_K			U(10)
-#define GPIO_BANK_Z			U(25)
-
 #define STM32MP_GPIOZ_PIN_MAX_COUNT	8
 #endif
 
@@ -440,15 +446,20 @@ enum ddr_type {
 #if STM32MP13
 #define NAND_OTP			"cfg9_otp"
 #define NAND2_OTP			"cfg10_otp"
+#define SSP_OTP				"cfg9_otp"
 #endif
 #if STM32MP15
 #define NAND_OTP			"nand_otp"
+#define SSP_OTP				"ssp_otp"
 #endif
 #define MONOTONIC_OTP			"monotonic_otp"
 #define UID_OTP				"uid_otp"
 #define PKH_OTP				"pkh_otp"
 #define ENCKEY_OTP			"enckey_otp"
 #define BOARD_ID_OTP			"board_id"
+#define CFG2_OTP			"cfg2_otp"
+#define CHIP_CERTIFICATE_OTP		"chip_otp"
+#define RMA_OTP				"rma_otp"
 
 /* OTP mask */
 /* CFG0 */
@@ -462,6 +473,31 @@ enum ddr_type {
 #endif
 #if STM32MP15
 #define CFG0_CLOSED_DEVICE		BIT(6)
+#endif
+
+/* CFG2 */
+#define OTP_CFG2_SEC_COUNTER_MASK	GENMASK_32(27, 20)
+#define OTP_CFG2_SEC_COUNTER_SHIFT	U(20)
+#define OTP_CFG2_ST_KEY_MASK		GENMASK_32(31, 28)
+#define OTP_CFG2_ST_KEY_SHIFT		U(28)
+
+/* SSP */
+#define SSP_OTP_REQ			BIT(BOOT_API_OTP_SSP_REQ_BIT_POS)
+#define SSP_OTP_SUCCESS			BIT(BOOT_API_OTP_SSP_SUCCESS_BIT_POS)
+#define SSP_OTP_MASK			GENMASK_32(BOOT_API_OTP_SSP_SUCCESS_BIT_POS, \
+						   BOOT_API_OTP_SSP_REQ_BIT_POS)
+#define SSP_OTP_SECRET_BASE		U(59)
+#define SSP_OTP_SECRET_END		U(95)
+
+/* CHIP_CERT */
+#define CHIP_CERTIFICATE_MAX_SIZE	U(0x40)
+
+/* RMA */
+#if STM32MP13
+#define RMA_OTP_MASK			GENMASK_32(31, 0)
+#endif
+#if STM32MP15
+#define RMA_OTP_MASK			GENMASK_32(29, 0)
 #endif
 
 /* PART NUMBER */
@@ -548,6 +584,7 @@ enum ddr_type {
  ******************************************************************************/
 #define TAMP_BASE			U(0x5C00A000)
 #define TAMP_BKP_REGISTER_BASE		(TAMP_BASE + U(0x100))
+#define TAMP_BKP_REG_CLK		RTCAPB
 #define TAMP_COUNTR			U(0x40)
 
 #if !(defined(__LINKER__) || defined(__ASSEMBLER__))
@@ -571,6 +608,14 @@ static inline uintptr_t tamp_bkpr(uint32_t idx)
  * STM32MP1 DDRPHYC
  ******************************************************************************/
 #define DDRPHYC_BASE			U(0x5A004000)
+
+/*******************************************************************************
+ * STM32MP1 MCE
+ ******************************************************************************/
+#if STM32MP13
+#define MCE_BASE			U(0x58001000)
+#define MCE_KEY_SIZE_IN_BYTES		U(16)
+#endif
 
 /*******************************************************************************
  * STM32MP1 IWDG
@@ -636,24 +681,34 @@ static inline uintptr_t tamp_bkpr(uint32_t idx)
 #define PKA_BASE			U(0x54006000)
 
 /*******************************************************************************
+ * STM32MP1 OPP
+ ******************************************************************************/
+#define PLAT_MAX_OPP_NB			U(2)
+#define PLAT_MAX_PLLCFG_NB		U(6)
+
+/*******************************************************************************
  * REGULATORS
  ******************************************************************************/
 /* 3 PWR + 1 VREFBUF + 14 PMIC regulators + 1 FIXED */
 #define PLAT_NB_RDEVS			U(19)
 /* 2 FIXED */
-#define PLAT_NB_FIXED_REGS		U(2)
+#define PLAT_NB_FIXED_REGUS		U(2)
+/* No GPIO regu */
+#define PLAT_NB_GPIO_REGUS		U(0)
 
 /*******************************************************************************
  * Device Tree defines
  ******************************************************************************/
-#define DT_BSEC_COMPAT			"st,stm32mp15-bsec"
 #if STM32MP13
+#define DT_BSEC_COMPAT			"st,stm32mp13-bsec"
 #define DT_DDR_COMPAT			"st,stm32mp13-ddr"
 #endif
 #if STM32MP15
+#define DT_BSEC_COMPAT			"st,stm32mp15-bsec"
 #define DT_DDR_COMPAT			"st,stm32mp1-ddr"
 #endif
 #define DT_IWDG_COMPAT			"st,stm32mp1-iwdg"
+#define DT_MMIO_SRAM			"mmio-sram"
 #define DT_PWR_COMPAT			"st,stm32mp1,pwr-reg"
 #if STM32MP13
 #define DT_RCC_CLK_COMPAT		"st,stm32mp13-rcc"

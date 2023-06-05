@@ -72,6 +72,7 @@ endef
 # Convenience function for verifying option has a boolean value
 # $(eval $(call assert_boolean,FOO)) will assert FOO is 0 or 1
 define assert_boolean
+    $(if $($(1)),,$(error $(1) must not be empty))
     $(if $(filter-out 0 1,$($1)),$(error $1 must be boolean))
 endef
 
@@ -95,6 +96,12 @@ endef
 # $(eval $(call assert_numerics,FOO BOO)) will assert FOO and BOO contain numeric values
 define assert_numerics
     $(foreach num,$1,$(eval $(call assert_numeric,$(num))))
+endef
+
+# Convenience function to check for a given linker option. An call to
+# $(call ld_option, --no-XYZ) will return --no-XYZ if supported by the linker
+define ld_option
+	$(shell if $(LD) $(1) -v >/dev/null 2>&1; then echo $(1); fi )
 endef
 
 # CREATE_SEQ is a recursive function to create sequence of numbers from 1 to
@@ -153,6 +160,13 @@ define ENCRYPT_FW
 $(2): $(1) enctool
 	$$(ECHO) "  ENC     $$<"
 	$$(Q)$$(ENCTOOL) $$(ENC_ARGS) -i $$< -o $$@
+endef
+
+# GEN_METADATA
+define GEN_METADATA
+$(2): $(1) | $(dir $(2))
+	$$(ECHO) "  GEN_METADATA     $$<"
+	$$(Q)$$(FWUMDTOOL) $$(FWUMD_ARGS) jsonparse $$< -b $$@
 endef
 
 # TOOL_ADD_PAYLOAD appends the command line arguments required by fiptool to

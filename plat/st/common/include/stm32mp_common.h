@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2022, STMicroelectronics - All Rights Reserved
+ * Copyright (C) 2018-2023, STMicroelectronics - All Rights Reserved
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -18,6 +18,7 @@
 void stm32mp_save_boot_ctx_address(uintptr_t address);
 uintptr_t stm32mp_get_boot_ctx_address(void);
 uint16_t stm32mp_get_boot_itf_selected(void);
+uint32_t stm32mp_get_boot_action(void);
 
 bool stm32mp_is_single_core(void);
 bool stm32mp_is_closed_device(void);
@@ -35,13 +36,21 @@ uintptr_t stm32mp_pwr_base(void);
 /* Return the base address of the RCC peripheral */
 uintptr_t stm32mp_rcc_base(void);
 
+void stm32mp_gic_pcpu_init(void);
+void stm32mp_gic_init(void);
+
 /* Check MMU status to allow spinlock use */
 bool stm32mp_lock_available(void);
+
+/* SMP protection on PWR registers access */
+void stm32mp_pwr_regs_lock(void);
+void stm32mp_pwr_regs_unlock(void);
 
 int stm32_get_otp_index(const char *otp_name, uint32_t *otp_idx,
 			uint32_t *otp_len);
 int stm32_get_otp_value(const char *otp_name, uint32_t *otp_val);
 int stm32_get_otp_value_from_idx(const uint32_t otp_idx, uint32_t *otp_val);
+int stm32_lock_enc_key_otp(void);
 
 /* Get IWDG platform instance ID from peripheral IO memory base address */
 uint32_t stm32_iwdg_get_instance(uintptr_t base);
@@ -69,6 +78,9 @@ static inline void stm32mp_setup_early_console(void)
 {
 }
 #endif
+
+bool stm32mp_skip_boot_device_after_standby(void);
+bool stm32mp_is_wakeup_from_standby(void);
 
 /*
  * Platform util functions for the GPIO driver
@@ -113,12 +125,15 @@ void stm32mp_io_setup(void);
 int stm32mp_map_ddr_non_cacheable(void);
 int stm32mp_unmap_ddr(void);
 
-/* Functions to save and get boot peripheral info */
-void stm32_save_boot_interface(uint32_t interface, uint32_t instance);
+/* Function to save boot info */
+void stm32_save_boot_info(boot_api_context_t *boot_context);
+/* Function to get boot peripheral info */
 void stm32_get_boot_interface(uint32_t *interface, uint32_t *instance);
+/* Function to get BOOT_MODE backup register address */
+uintptr_t stm32_get_bkpr_boot_mode_addr(void);
 
-/* Functions to save and get boot authentication status and partition used */
-void stm32_save_boot_auth(uint32_t auth_status, uint32_t boot_partition);
+/* Display board information from the value found in OTP fuse */
+void stm32_display_board_info(uint32_t board_id);
 
 #if PSA_FWU_SUPPORT
 void stm32mp1_fwu_set_boot_idx(void);

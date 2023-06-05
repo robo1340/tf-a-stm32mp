@@ -180,6 +180,11 @@ FIP_DEPS += enctool
 FWU_FIP_DEPS += enctool
 endif
 
+ifeq (${PSA_FWU_SUPPORT},1)
+FWUMD_ARGS += --nb-fw-imgs ${NR_OF_FW_BANKS}
+FWUMD_ARGS += --nb-banks ${NR_OF_IMAGES_IN_FW_BANK}
+endif
+
 ################################################################################
 # Toolchain
 ################################################################################
@@ -351,26 +356,52 @@ ASFLAGS_aarch64		=	$(march64-directive)
 # General warnings
 WARNINGS		:=	-Wall -Wmissing-include-dirs -Wunused	\
 				-Wdisabled-optimization -Wvla -Wshadow	\
-				-Wno-unused-parameter -Wredundant-decls
+				-Wredundant-decls
+# stricter warnings
+WARNINGS		+=	-Wextra -Wno-trigraphs
+# too verbose for generic build
+WARNINGS		+=	-Wno-missing-field-initializers \
+				-Wno-type-limits -Wno-sign-compare \
+# on clang this flag gets reset if -Wextra is set after it. No difference on gcc
+WARNINGS		+=	-Wno-unused-parameter
 
 # Additional warnings
-# Level 1
-WARNING1 := -Wextra
-WARNING1 += -Wmissing-format-attribute
-WARNING1 += -Wmissing-prototypes
-WARNING1 += -Wold-style-definition
+# Level 1 - infrequent warnings we should have none of
+# full -Wextra
+WARNING1 += -Wsign-compare
+WARNING1 += -Wtype-limits
+WARNING1 += -Wmissing-field-initializers
 
-# Level 2
-WARNING2 := -Waggregate-return
-WARNING2 += -Wcast-align
-WARNING2 += -Wnested-externs
+# Level 2 - problematic warnings that we want
+# zlib, compiler-rt, coreboot, and mbdedtls blow up with these
+# TODO: disable just for them and move into default build
+WARNING2 += -Wold-style-definition
+WARNING2 += -Wmissing-prototypes
+WARNING2 += -Wmissing-format-attribute
+# TF-A aims to comply with this eventually. Effort too large at present
+WARNING2 += -Wundef
+# currently very involved and many platforms set this off
+WARNING2 += -Wunused-const-variable=2
 
+# Level 3 - very pedantic, frequently ignored
 WARNING3 := -Wbad-function-cast
+WARNING3 += -Waggregate-return
+WARNING3 += -Wnested-externs
+WARNING3 += -Wcast-align
 WARNING3 += -Wcast-qual
 WARNING3 += -Wconversion
 WARNING3 += -Wpacked
 WARNING3 += -Wpointer-arith
 WARNING3 += -Wswitch-default
+
+# Setting W is quite verbose and most warnings will be pre-existing issues
+# outside of the contributor's control. Don't fail the build on them so warnings
+# can be seen and hopefully addressed
+ifdef W
+ifneq (${W},0)
+E	 ?= 0
+endif
+endif
 
 ifeq (${W},1)
 WARNINGS += $(WARNING1)
@@ -417,6 +448,8 @@ endif
 
 GCC_V_OUTPUT		:=	$(shell $(CC) -v 2>&1)
 
+TF_LDFLAGS		+=	-z noexecstack
+
 # LD = armlink
 ifneq ($(findstring armlink,$(notdir $(LD))),)
 TF_LDFLAGS		+=	--diag_error=warning --lto_level=O1
@@ -443,12 +476,17 @@ TF_LDFLAGS		+=	$(subst --,-Xlinker --,$(TF_LDFLAGS_$(ARCH)))
 
 # LD = gcc-ld (ld) or llvm-ld (ld.lld) or other
 else
-TF_LDFLAGS		+=	--fatal-warnings -O1
+# With ld.bfd version 2.39 and newer new warnings are added. Skip those since we
+# are not loaded by a elf loader.
+TF_LDFLAGS		+=	$(call ld_option, --no-warn-rwx-segments)
+TF_LDFLAGS		+=	-O1
 TF_LDFLAGS		+=	--gc-sections
 # ld.lld doesn't recognize the errata flags,
-# therefore don't add those in that case
+# therefore don't add those in that case.
+# ld.lld reports section type mismatch warnings,
+# therefore don't add --fatal-warnings to it.
 ifeq ($(findstring ld.lld,$(notdir $(LD))),)
-TF_LDFLAGS		+=	$(TF_LDFLAGS_$(ARCH))
+TF_LDFLAGS		+=	$(TF_LDFLAGS_$(ARCH)) --fatal-warnings
 endif
 endif
 
@@ -958,6 +996,10 @@ ENCTOOL			?=	${ENCTOOLPATH}/encrypt_fw${BIN_EXT}
 FIPTOOLPATH		?=	tools/fiptool
 FIPTOOL			?=	${FIPTOOLPATH}/fiptool${BIN_EXT}
 
+# Variables for use with Firmware Update Metadata
+FWUMDTOOLPATH		?=	tools/fwu_gen_metadata/
+FWUMDTOOL		?=	${FWUMDTOOLPATH}/fwumd_tool.py
+
 # Variables for use with sptool
 SPTOOLPATH		?=	tools/sptool
 SPTOOL			?=	${SPTOOLPATH}/sptool.py
@@ -972,6 +1014,7 @@ PYTHON			?=	python3
 # Variables for use with PRINT_MEMORY_MAP
 PRINT_MEMORY_MAP_PATH		?=	tools/memory
 PRINT_MEMORY_MAP		?=	${PRINT_MEMORY_MAP_PATH}/print_memory_map.py
+INVERTED_MEMMAP			?=	0
 
 # Variables for use with documentation build using Sphinx tool
 DOCS_PATH		?=	docs

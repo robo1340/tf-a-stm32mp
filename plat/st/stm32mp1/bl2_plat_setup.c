@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2022, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2015-2023, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -12,11 +12,16 @@
 #include <common/bl_common.h>
 #include <common/debug.h>
 #include <common/desc_image_load.h>
+#include <drivers/clk.h>
 #include <drivers/generic_delay_timer.h>
 #include <drivers/mmc.h>
 #include <drivers/st/bsec.h>
 #include <drivers/st/regulator_fixed.h>
+#include <drivers/st/regulator_gpio.h>
 #include <drivers/st/stm32_iwdg.h>
+#if STM32MP13
+#include <drivers/st/stm32_mce.h>
+#endif
 #include <drivers/st/stm32_rng.h>
 #include <drivers/st/stm32_uart.h>
 #include <drivers/st/stm32mp1_clk.h>
@@ -32,7 +37,17 @@
 
 #include <platform_def.h>
 #include <stm32mp_common.h>
+#include <stm32mp1_context.h>
 #include <stm32mp1_dbgmcu.h>
+
+#define PLL1_NOMINAL_FREQ_IN_KHZ	650000U /* 650MHz */
+
+#if !STM32MP1_OPTEE_IN_SYSRAM
+IMPORT_SYM(uintptr_t, __BSS_START__, BSS_START);
+IMPORT_SYM(uintptr_t, __BSS_END__, BSS_END);
+IMPORT_SYM(uintptr_t, __DATA_START__, DATA_START);
+IMPORT_SYM(uintptr_t, __DATA_END__, DATA_END);
+#endif
 
 #if DEBUG
 static const char debug_msg[] = {
@@ -157,6 +172,23 @@ void bl2_platform_setup(void)
 		panic();
 	}
 
+	if (!stm32mp1_ddr_is_restored()) {
+#if STM32MP15
+		uintptr_t bkpr_core1_magic =
+			tamp_bkpr(BOOT_API_CORE1_MAGIC_NUMBER_TAMP_BCK_REG_IDX);
+		uintptr_t bkpr_core1_addr =
+			tamp_bkpr(BOOT_API_CORE1_BRANCH_ADDRESS_TAMP_BCK_REG_IDX);
+
+		/* Clear backup register */
+		mmio_write_32(bkpr_core1_addr, 0);
+		/* Clear backup register magic */
+		mmio_write_32(bkpr_core1_magic, 0);
+#endif
+
+		/* Clear the context in BKPSRAM */
+		stm32_clean_context();
+	}
+
 	/* Map DDR for binary load, now with cacheable attribute */
 	ret = mmap_add_dynamic_region(STM32MP_DDR_BASE, STM32MP_DDR_BASE,
 				      STM32MP_DDR_MAX_SIZE, MT_MEMORY | MT_RW | MT_SECURE);
@@ -255,11 +287,6 @@ void bl2_el3_plat_arch_setup(void)
 		mmio_clrbits_32(rcc_base + RCC_BDCR, RCC_BDCR_VSWRST);
 	}
 
-#if STM32MP15
-	/* Disable MCKPROT */
-	mmio_clrbits_32(rcc_base + RCC_TZCR, RCC_TZCR_MCKPROT);
-#endif
-
 	/*
 	 * Set minimum reset pulse duration to 31ms for discrete power
 	 * supplied boards.
@@ -286,14 +313,11 @@ void bl2_el3_plat_arch_setup(void)
 		panic();
 	}
 
-	if (stm32mp1_clk_init() < 0) {
+	if (stm32mp1_clk_init(PLL1_NOMINAL_FREQ_IN_KHZ) < 0) {
 		panic();
 	}
 
-	stm32_save_boot_interface(boot_context->boot_interface_selected,
-				  boot_context->boot_interface_instance);
-	stm32_save_boot_auth(boot_context->auth_status,
-			     boot_context->boot_partition_used_toboot);
+	stm32_save_boot_info(boot_context);
 
 #if STM32MP_USB_PROGRAMMER && STM32MP15
 	/* Deconfigure all UART RX pins configured by ROM code */
@@ -303,6 +327,9 @@ void bl2_el3_plat_arch_setup(void)
 	if (stm32mp_uart_console_setup() != 0) {
 		goto skip_console_init;
 	}
+
+	/* Enter in boot mode */
+	stm32mp1_syscfg_boot_mode_enable();
 
 	stm32mp_print_cpuinfo();
 
@@ -332,9 +359,16 @@ skip_console_init:
 		panic();
 	}
 
+#if (PLAT_NB_GPIO_REGUS > 0)
+	if (gpio_regulator_register() != 0) {
+		panic();
+	}
+#endif
+
 	if (dt_pmic_status() > 0) {
 		initialize_pmic();
-		if (pmic_voltages_init() != 0) {
+		if (!stm32mp_is_wakeup_from_standby() &&
+		    pmic_voltages_init() != 0) {
 			ERROR("PMIC voltages init failed\n");
 			panic();
 		}
@@ -377,8 +411,43 @@ skip_console_init:
 
 	fconf_populate("TB_FW", STM32MP_DTB_BASE);
 
-	stm32mp_io_setup();
+	if (stm32mp_skip_boot_device_after_standby()) {
+		bl_mem_params_node_t *bl_mem_params = get_bl_mem_params_node(FW_CONFIG_ID);
+
+		assert(bl_mem_params != NULL);
+
+		bl_mem_params->image_info.h.attr |= IMAGE_ATTRIB_SKIP_LOADING;
+	} else {
+		stm32mp_io_setup();
+	}
 }
+
+#if STM32MP13
+static void prepare_encryption(void)
+{
+	uint8_t mkey[MCE_KEY_SIZE_IN_BYTES];
+
+	stm32_mce_init();
+
+	if (stm32mp_is_wakeup_from_standby()) {
+		stm32mp1_pm_get_mce_mkey_from_context(mkey);
+		stm32_mce_reload_configuration();
+	} else {
+		/* Generate MCE master key from RNG */
+		if (stm32_rng_read(mkey, MCE_KEY_SIZE_IN_BYTES) != 0) {
+			panic();
+		}
+
+		stm32mp1_pm_save_mce_mkey_in_context(mkey);
+	}
+
+	if (stm32_mce_write_master_key(mkey) != 0) {
+		panic();
+	}
+
+	stm32_mce_lock_master_key();
+}
+#endif
 
 /*******************************************************************************
  * This function can be used by the platforms to update/use image
@@ -396,6 +465,7 @@ int bl2_plat_handle_post_image_load(unsigned int image_id)
 	unsigned int i;
 	unsigned int idx;
 	unsigned long long ddr_top __unused;
+	bool wakeup_ddr_sr = stm32mp1_ddr_is_restored();
 	const unsigned int image_ids[] = {
 		BL32_IMAGE_ID,
 		BL33_IMAGE_ID,
@@ -407,6 +477,15 @@ int bl2_plat_handle_post_image_load(unsigned int image_id)
 
 	switch (image_id) {
 	case FW_CONFIG_ID:
+#if STM32MP13
+		if (stm32mp_is_closed_device() || stm32mp_is_auth_supported()) {
+			prepare_encryption();
+		}
+#endif
+		if (stm32mp_skip_boot_device_after_standby()) {
+			return 0;
+		}
+
 		/* Set global DTB info for fixed fw_config information */
 		set_config_info(STM32MP_FW_CONFIG_BASE, ~0UL, STM32MP_FW_CONFIG_MAX_SIZE,
 				FW_CONFIG_ID);
@@ -431,7 +510,13 @@ int bl2_plat_handle_post_image_load(unsigned int image_id)
 			bl_mem_params->image_info.image_base = config_info->config_addr;
 			bl_mem_params->image_info.image_max_size = config_info->config_max_size;
 
-			bl_mem_params->image_info.h.attr &= ~IMAGE_ATTRIB_SKIP_LOADING;
+			/*
+			 * If going back from CSTANDBY / STANDBY and DDR was in Self-Refresh,
+			 * DDR partitions must not be reloaded.
+			 */
+			if (!(wakeup_ddr_sr && (config_info->config_addr >= STM32MP_DDR_BASE))) {
+				bl_mem_params->image_info.h.attr &= ~IMAGE_ATTRIB_SKIP_LOADING;
+			}
 
 			switch (image_ids[i]) {
 			case BL32_IMAGE_ID:
@@ -448,15 +533,22 @@ int bl2_plat_handle_post_image_load(unsigned int image_id)
 				paged_mem_params = get_bl_mem_params_node(BL32_EXTRA2_IMAGE_ID);
 				if (paged_mem_params != NULL) {
 					paged_mem_params->image_info.image_base = STM32MP_DDR_BASE +
-						(dt_get_ddr_size() - STM32MP_DDR_S_SIZE -
-						 STM32MP_DDR_SHMEM_SIZE);
+						(dt_get_ddr_size() - STM32MP_DDR_S_SIZE);
 					paged_mem_params->image_info.image_max_size =
 						STM32MP_DDR_S_SIZE;
 				}
 				break;
 
 			case BL33_IMAGE_ID:
-				bl_mem_params->ep_info.pc = config_info->config_addr;
+				if (wakeup_ddr_sr) {
+					/*
+					 * Set ep_info PC to 0, to inform BL32 it is a reset
+					 * after STANDBY
+					 */
+					bl_mem_params->ep_info.pc = 0U;
+				} else {
+					bl_mem_params->ep_info.pc = config_info->config_addr;
+				}
 				break;
 
 			case HW_CONFIG_ID:
@@ -470,11 +562,20 @@ int bl2_plat_handle_post_image_load(unsigned int image_id)
 		break;
 
 	case BL32_IMAGE_ID:
+		if (wakeup_ddr_sr && stm32mp_skip_boot_device_after_standby()) {
+			bl_mem_params->ep_info.pc = stm32_pm_get_optee_ep();
+			if (stm32mp1_addr_inside_backupsram(bl_mem_params->ep_info.pc)) {
+				clk_enable(BKPSRAM);
+			}
+			break;
+		}
+
 		if (optee_header_is_valid(bl_mem_params->image_info.image_base)) {
 			image_info_t *paged_image_info = NULL;
 
 			/* BL32 is OP-TEE header */
 			bl_mem_params->ep_info.pc = bl_mem_params->image_info.image_base;
+
 			pager_mem_params = get_bl_mem_params_node(BL32_EXTRA1_IMAGE_ID);
 			assert(pager_mem_params != NULL);
 
@@ -509,6 +610,10 @@ int bl2_plat_handle_post_image_load(unsigned int image_id)
 				tos_fw_mem_params->image_info.image_max_size;
 			bl_mem_params->ep_info.args.arg0 = 0;
 		}
+
+		if (bl_mem_params->ep_info.pc >= STM32MP_DDR_BASE) {
+			stm32_context_save_bl2_param();
+		}
 		break;
 
 	case BL33_IMAGE_ID:
@@ -516,7 +621,9 @@ int bl2_plat_handle_post_image_load(unsigned int image_id)
 		assert(bl32_mem_params != NULL);
 		bl32_mem_params->ep_info.lr_svc = bl_mem_params->ep_info.pc;
 #if PSA_FWU_SUPPORT
-		stm32mp1_fwu_set_boot_idx();
+		if (plat_fwu_is_enabled()) {
+			stm32mp1_fwu_set_boot_idx();
+		}
 #endif /* PSA_FWU_SUPPORT */
 		break;
 
@@ -543,20 +650,29 @@ int bl2_plat_handle_post_image_load(unsigned int image_id)
 
 void bl2_el3_plat_prepare_exit(void)
 {
+#if STM32MP_UART_PROGRAMMER || STM32MP_USB_PROGRAMMER
 	uint16_t boot_itf = stm32mp_get_boot_itf_selected();
 
-	switch (boot_itf) {
-#if STM32MP_UART_PROGRAMMER || STM32MP_USB_PROGRAMMER
-	case BOOT_API_CTX_BOOT_INTERFACE_SEL_SERIAL_UART:
-	case BOOT_API_CTX_BOOT_INTERFACE_SEL_SERIAL_USB:
+	if ((boot_itf == BOOT_API_CTX_BOOT_INTERFACE_SEL_SERIAL_UART) ||
+	    (boot_itf == BOOT_API_CTX_BOOT_INTERFACE_SEL_SERIAL_USB)) {
 		/* Invalidate the downloaded buffer used with io_memmap */
 		inv_dcache_range(DWL_BUFFER_BASE, DWL_BUFFER_SIZE);
-		break;
-#endif /* STM32MP_UART_PROGRAMMER || STM32MP_USB_PROGRAMMER */
-	default:
-		/* Do nothing in default case */
-		break;
 	}
+#endif /* STM32MP_UART_PROGRAMMER || STM32MP_USB_PROGRAMMER */
+
+#if !STM32MP1_OPTEE_IN_SYSRAM
+	flush_dcache_range(BSS_START, BSS_END - BSS_START);
+	flush_dcache_range(DATA_START, DATA_END - DATA_START);
+#endif
+
+#if !defined(DECRYPTION_SUPPORT_none)
+	if (stm32_lock_enc_key_otp() != 0) {
+		panic();
+	}
+#endif
 
 	stm32mp1_security_setup();
+
+	/* end of boot mode */
+	stm32mp1_syscfg_boot_mode_disable();
 }
