@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
 /*
- * Copyright (C) STMicroelectronics 2022 - All Rights Reserved
- * Author: Alexandre Torgue <alexandre.torgue@foss.st.com> for STMicroelectronics.
+ * Copyright (C) STMicroelectronics 2017 - All Rights Reserved
+ * Author: Ludovic Barre <ludovic.barre@st.com> for STMicroelectronics.
  */
-#include <dt-bindings/clock/stm32mp13-clks.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/clock/stm32mp13-clks.h>
 #include <dt-bindings/reset/stm32mp13-resets.h>
 
 / {
@@ -26,13 +26,15 @@
 		};
 	};
 
-	clocks {
-		clk_csi: clk-csi {
-			#clock-cells = <0>;
-			compatible = "fixed-clock";
-			clock-frequency = <4000000>;
-		};
+	intc: interrupt-controller@a0021000 {
+		compatible = "arm,cortex-a7-gic";
+		#interrupt-cells = <3>;
+		interrupt-controller;
+		reg = <0xa0021000 0x1000>,
+		      <0xa0022000 0x2000>;
+	};
 
+	clocks {
 		clk_hse: clk-hse {
 			#clock-cells = <0>;
 			compatible = "fixed-clock";
@@ -56,19 +58,12 @@
 			compatible = "fixed-clock";
 			clock-frequency = <32000>;
 		};
-	};
 
-	intc: interrupt-controller@a0021000 {
-		compatible = "arm,cortex-a7-gic";
-		#interrupt-cells = <3>;
-		interrupt-controller;
-		reg = <0xa0021000 0x1000>,
-		      <0xa0022000 0x2000>;
-	};
-
-	psci {
-		compatible = "arm,psci-1.0";
-		method = "smc";
+		clk_csi: clk-csi {
+			#clock-cells = <0>;
+			compatible = "fixed-clock";
+			clock-frequency = <4000000>;
+		};
 	};
 
 	soc {
@@ -368,7 +363,7 @@
 			status = "disabled";
 		};
 
-		ddr: ddr@5a003000 {
+		ddr: ddr@5a003000{
 			compatible = "st,stm32mp13-ddr";
 			reg = <0x5a003000 0x550>, <0x5a004000 0x234>;
 			clocks = <&rcc AXIDCG>,

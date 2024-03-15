@@ -8,12 +8,6 @@
 		/delete-property/ mmc0;
 	};
 
-	sysram: sram@2ffe0000 {
-		compatible = "mmio-sram";
-		reg = <0x2ffe0000 0x20000>;
-		vddcore-supply = <&vddcore>;
-	};
-
 	soc {
 		efuse@5c005000 {
 			cfg0_otp: cfg0_otp@0 {
@@ -49,5 +43,10 @@
 #if STM32MP_UART_PROGRAMMER
 		/delete-node/ usbphyc@5a006000;
 #endif
+
+		pinctrl@50002000 {
+			/delete-node/ sdmmc1-b4-0;
+			/delete-node/ sdmmc2-b4-0;
+		};
 	};
 };

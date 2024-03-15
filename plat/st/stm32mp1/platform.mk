@@ -16,7 +16,7 @@ STM32MP_USE_EXTERNAL_HEAP ?=	0
 STM32MP_CRYPTO_ROM_LIB	?=	0
 
 # Default Device tree
-DTB_FILE_NAME		?=	stm32mp157c-ev1.dtb
+DTB_FILE_NAME		?=	stm32mp135d-odyssey.dtb
 
 STM32MP13		?=	0
 STM32MP15		?=	0

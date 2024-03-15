@@ -3,8 +3,6 @@
  * Copyright (c) 2021, STMicroelectronics - All Rights Reserved
  */
 
-#include <dt-bindings/soc/stm32mp13-mce.h>
-
 / {
 	st-mem-encrypt {
 		compatible = "st,mem-encrypt";
